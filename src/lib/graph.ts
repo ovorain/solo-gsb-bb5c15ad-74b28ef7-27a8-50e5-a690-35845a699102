@@ -170,6 +170,17 @@ export function findNegativeCycle(
 }
 
 /**
+ * 超级源点 Bellman-Ford 求一组可行势：返回值 h 满足对每条边 h[v] − h[u] ≤ w
+ * （全部节点初始距离为 0，等价于引入指向所有节点、权重 0 的超级源点）。
+ * 系统可满足时返回势数组（确定性：结果只取决于边集与边顺序），存在负环时返回 null。
+ */
+export function feasiblePotentials(n: number, edges: DiffEdge[]): number[] | null {
+  if (n === 0) return []
+  const { dist, lastRelaxed } = bellmanFord(n, edges, new Array(n).fill(0))
+  return lastRelaxed ? null : dist
+}
+
+/**
  * 对当前全部启用的约束做完整分析：
  * 1) 超级源点 Bellman-Ford 检测差分系统是否可满足（有无负环）；
  * 2) 有负环时抽取一条矛盾环；

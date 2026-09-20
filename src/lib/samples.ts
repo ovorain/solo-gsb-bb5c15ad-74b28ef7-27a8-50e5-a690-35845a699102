@@ -41,11 +41,17 @@ export function buildConsistentSample(): AppState {
   ]
   const constraints = E.map((e) => ({ ...e, id: uid('ct') }))
 
+  // 期望时刻演示：期望恢复 +25 分钟（窗口 [10,20] 之外，整体搜索得 D=5）、期望复盘 +120 分钟（可达）
+  const anchorTime = defaultAnchorTime()
   return {
     events,
     constraints,
     anchorId: alert.id,
-    anchorTime: defaultAnchorTime(),
+    anchorTime,
+    desiredTimes: {
+      [recovered.id]: plusMinutes(anchorTime, 25),
+      [postmortem.id]: plusMinutes(anchorTime, 120),
+    },
   }
 }
 
@@ -75,18 +81,31 @@ export function buildContradictionSample(): AppState {
     constraints,
     anchorId: A.id,
     anchorTime: defaultAnchorTime(),
+    desiredTimes: {},
   }
 }
 
 /** 空状态（保留默认锚点时间） */
 export function emptyState(): AppState {
-  return { events: [], constraints: [], anchorId: null, anchorTime: defaultAnchorTime() }
+  return { events: [], constraints: [], anchorId: null, anchorTime: defaultAnchorTime(), desiredTimes: {} }
 }
 
 /** 当前时间取整到分钟，用于 datetime-local 输入框 */
 export function defaultAnchorTime(): string {
   const d = new Date()
   d.setSeconds(0, 0)
+  return toLocalISO(d)
+}
+
+/** 在 ISO 本地时间上叠加分钟偏移，返回 datetime-local 格式 */
+function plusMinutes(iso: string, min: number): string {
+  const d = new Date(iso)
+  d.setMinutes(d.getMinutes() + min)
+  return toLocalISO(d)
+}
+
+/** 格式化为 datetime-local 所需的 yyyy-MM-ddTHH:mm（本地时间） */
+function toLocalISO(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }

@@ -8,6 +8,10 @@ export function loadState(): AppState | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as AppState
     if (!Array.isArray(parsed.events) || !Array.isArray(parsed.constraints)) return null
+    // 旧版本存档没有期望时刻字段：规范化为空表
+    if (!parsed.desiredTimes || typeof parsed.desiredTimes !== 'object') {
+      parsed.desiredTimes = {}
+    }
     return parsed
   } catch {
     return null

@@ -34,6 +34,8 @@ export interface AppState {
   anchorId: string | null
   /** 锚点绝对时间（本地时间，ISO 格式 yyyy-MM-ddTHH:mm） */
   anchorTime: string
+  /** 各事件的期望时刻（事件 id -> 本地时间 ISO）；仅非锚点且与锚点连通的事件参与最小偏差排程 */
+  desiredTimes: Record<string, string>
 }
 
 /** 差分图中的一条有向边 u -> v，权重 w（分钟），表示 t_v - t_u <= w */
@@ -104,6 +106,34 @@ export interface BoundTrace {
   offset: number
   /** 从锚点出发按推导顺序排列的步骤 */
   steps: BoundTraceStep[]
+}
+
+/** 最小偏差排程中单个事件的结果 */
+export interface ScheduleEntry {
+  eventIdx: number
+  status: 'anchor' | 'scheduled' | 'unscheduled'
+  /** 实际排程时刻相对锚点的偏移（分钟）；未定时为 null */
+  offsetMin: number | null
+  /** 期望时刻相对锚点的偏移（分钟）；未填写或无效为 null */
+  desiredOffset: number | null
+  /** 实际 − 期望（分钟）；仅对已填写期望且已定时的事件 */
+  deviation: number | null
+  /** 期望因事件未与锚点连通而被忽略 */
+  desiredIgnored: boolean
+}
+
+/** 最小偏差排程结果：全部启用约束与每个期望事件的 |实际 − 期望| ≤ D 同时可满足的最小非负整数 D */
+export interface ScheduleResult {
+  /** 最小非负整数偏差 D（分钟） */
+  D: number
+  /** 每个事件的排程条目（按事件顺序） */
+  entries: ScheduleEntry[]
+  /** 达到 |偏差| = D 的事件下标（按事件顺序） */
+  tightEventIdx: number[]
+  /** 本排程中期望事件的最大 |偏差|（整数输入下等于 D） */
+  maxDeviation: number
+  /** 参与整体搜索的期望事件数量 */
+  desiredCount: number
 }
 
 /**

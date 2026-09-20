@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "事件时序约束校验：差分约束图可满足性实时判定、矛盾环高亮、锚点时间窗计算",
+  "description": "事件时序约束校验：差分约束图可满足性实时判定、矛盾环高亮、锚点时间窗计算、最小偏差排程",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

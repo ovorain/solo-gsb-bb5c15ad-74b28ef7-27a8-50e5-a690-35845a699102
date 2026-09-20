@@ -26,6 +26,15 @@ check(appHtml, '各事件相对锚点的时间窗', 'App')
 check(appHtml, '差分约束图', 'App')
 check(appHtml, '点击最早/最晚时间可追溯边界推导链', 'App')
 
+// 1b) 最小偏差排程（默认示例含期望时刻：恢复 +25 → D=5）
+check(appHtml, '最小偏差排程', '最小偏差排程')
+check(appHtml, '期望时刻', '最小偏差排程')
+check(appHtml, 'D = 5', '最小偏差排程')
+check(appHtml, '最大偏差', '最小偏差排程')
+check(appHtml, '达到 ±D', '最小偏差排程')
+check(appHtml, '已定时', '最小偏差排程')
+check(appHtml, '未定时', '最小偏差排程')
+
 // 2) 主时间窗表 + 三种追溯形态
 const s = buildConsistentSample()
 const r = analyze(s.events, s.constraints, s.anchorId)

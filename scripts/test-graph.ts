@@ -1,7 +1,8 @@
 import { analyze, buildEdges, constraintToEdges, traceBound } from '../src/lib/graph'
 import { DEFAULT_STATE_LIMIT, findMinimalRepairs, MAX_PLANS } from '../src/lib/repair'
+import { computeMinDeviationSchedule } from '../src/lib/schedule'
 import { buildConsistentSample, buildContradictionSample } from '../src/lib/samples'
-import type { Constraint, TEvent } from '../src/types'
+import type { Constraint, ScheduleResult, TEvent } from '../src/types'
 
 let passed = 0
 let failed = 0
@@ -445,6 +446,167 @@ function approxEq(a: number | null, b: number | null) {
     '追溯：重算链累计偏移 5/15/21/25',
   )
   assert(!t.steps.some((s2) => s2.edge.constraintId === overall.id), '追溯：重算链不含已停用约束')
+}
+
+// ==================== 最小偏差排程 ====================
+
+const ANCHOR_ISO = '2026-01-01T08:00'
+/** 相对固定锚点时间的 datetime-local 字符串 */
+function isoPlus(min: number): string {
+  const d = new Date(ANCHOR_ISO)
+  d.setMinutes(d.getMinutes() + min)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 性质校验：排程锚点为 0、满足全部启用约束、期望偏差均在 ±D 内 */
+function scheduleFeasible(
+  events: TEvent[],
+  constraints: Constraint[],
+  anchorId: string,
+  r: ScheduleResult,
+): boolean {
+  const idx = new Map(events.map((e, i) => [e.id, i]))
+  if (r.entries[idx.get(anchorId)!].offsetMin !== 0) return false
+  for (const c of constraints) {
+    if (!c.enabled) continue
+    const ia = idx.get(c.aId)
+    const ib = idx.get(c.bId)
+    if (ia === undefined || ib === undefined) continue
+    const ta = r.entries[ia].offsetMin
+    const tb = r.entries[ib].offsetMin
+    if (ta === null || tb === null) continue // 未与锚点连通的分量不参与
+    const diff = c.relation === 'earlier' ? tb! - ta! : ta! - tb!
+    if (diff < c.min - 1e-9 || diff > c.max + 1e-9) return false
+  }
+  return r.entries.every((en) => en.deviation === null || Math.abs(en.deviation) <= r.D + 1e-9)
+}
+
+// ---- 最小偏差排程：可满足示例（恢复期望 +25 → D=5，恢复达到 −D）----
+{
+  const s = buildConsistentSample()
+  const byName = new Map(s.events.map((e, i) => [e.name, i]))
+  const recovered = byName.get('服务恢复')!
+  const postmortem = byName.get('复盘会议')!
+  const press = byName.get('媒体报道')!
+  const desired: Record<string, string> = {
+    [s.events[recovered].id]: isoPlus(25),
+    [s.events[postmortem].id]: isoPlus(120),
+  }
+  const r = computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, desired)!
+  assert(r !== null, '排程：示例可计算')
+  assert(r.D === 5, `排程：示例最小偏差 D=5（实际 ${r.D}）`)
+  assert(r.desiredCount === 2, '排程：2 个期望事件参与整体搜索')
+  const enRec = r.entries[recovered]
+  assert(enRec.status === 'scheduled' && enRec.offsetMin === 20, '排程：恢复被钉在窗口端点 +20')
+  assert(enRec.deviation === -5, '排程：恢复偏差 −5（达到 −D）')
+  assert(r.tightEventIdx.includes(recovered), '排程：恢复列入达到 ±D 的事件')
+  assert(r.maxDeviation === 5, '排程：最大偏差恰为 D=5')
+  const enPost = r.entries[postmortem]
+  assert(enPost.deviation !== null && Math.abs(enPost.deviation) <= 5, '排程：复盘偏差在 ±D 内')
+  const enPress = r.entries[press]
+  assert(enPress.status === 'unscheduled' && enPress.offsetMin === null, '排程：未连通事件标记未定时')
+  assert(r.entries[byName.get('值班告警触发')!].status === 'anchor', '排程：锚点状态正确')
+  assert(scheduleFeasible(s.events, s.constraints, s.anchorId!, r), '排程：输出满足全部启用约束且偏差 ≤ D')
+}
+
+// ---- 最小偏差排程：内置示例自带的期望时刻（随项目持久化的数据）----
+{
+  const s = buildConsistentSample()
+  const r = computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, s.desiredTimes)!
+  assert(r !== null && r.D === 5, '排程：内置示例期望时刻对应 D=5')
+  assert(scheduleFeasible(s.events, s.constraints, s.anchorId!, r), '排程：内置示例输出可行')
+}
+
+// ---- 最小偏差排程：整体可满足性搜索，不能独立夹窗 ----
+{
+  // t_Y = t_X + 5 使两事件耦合：各自窗口为 X∈[0,5]、Y∈[5,10]。
+  // 期望 X=+10、Y=0 时，独立夹窗把 X 夹到 5、Y 夹到 5（各偏差 5）会误判 D=5；
+  // 但 t_X=5 ⇒ t_Y=10（偏差 10），整体最小偏差实为 D=8。
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' }, { id: 'x', name: 'X' }, { id: 'y', name: 'Y' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'x', bId: 'a', relation: 'later', min: 0, max: 10, enabled: true },
+    { id: 'c2', aId: 'y', bId: 'a', relation: 'later', min: 0, max: 10, enabled: true },
+    { id: 'c3', aId: 'y', bId: 'x', relation: 'later', min: 5, max: 5, enabled: true },
+  ]
+  const win = analyze(events, cs, 'a')
+  const wx = win.windows.get(1)!
+  const wy = win.windows.get(2)!
+  assert(wx.earliestOffset === 0 && wx.latestOffset === 5, '排程：X 窗口被耦合收紧为 [0,5]')
+  assert(wy.earliestOffset === 5 && wy.latestOffset === 10, '排程：Y 窗口被耦合收紧为 [5,10]')
+  const r = computeMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, { x: isoPlus(10), y: isoPlus(0) })!
+  assert(r.D === 8, `排程：耦合系统整体搜索得 D=8（实际 ${r.D}），独立夹窗会误判为 5`)
+  assert(r.maxDeviation === 8 && r.tightEventIdx.length >= 1, '排程：耦合系统有事件达到 ±D')
+  assert(scheduleFeasible(events, cs, 'a', r), '排程：耦合系统输出可行')
+}
+
+// ---- 最小偏差排程：无可参与期望 / 前提不满足时返回 null ----
+{
+  const s = buildConsistentSample()
+  assert(
+    computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, {}) === null,
+    '排程：未填写期望返回 null',
+  )
+  const pressId = s.events.find((e) => e.name === '媒体报道')!.id
+  assert(
+    computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, { [pressId]: isoPlus(30) }) === null,
+    '排程：期望仅在未连通事件上时返回 null',
+  )
+  assert(
+    computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, { [s.anchorId!]: isoPlus(0) }) === null,
+    '排程：锚点上的期望被忽略',
+  )
+  assert(
+    computeMinDeviationSchedule(s.events, s.constraints, null, ANCHOR_ISO, { [s.events[1].id]: isoPlus(5) }) === null,
+    '排程：无锚点返回 null',
+  )
+  const bad = buildContradictionSample()
+  assert(
+    computeMinDeviationSchedule(bad.events, bad.constraints, bad.anchorId, ANCHOR_ISO, {
+      [bad.events[1].id]: isoPlus(15),
+    }) === null,
+    '排程：矛盾系统返回 null（不输出旧结果）',
+  )
+}
+
+// ---- 最小偏差排程：期望全部可达时 D=0；相同输入输出确定一致 ----
+{
+  const s = buildConsistentSample()
+  const byName = new Map(s.events.map((e, i) => [e.name, i]))
+  const desired = {
+    [s.events[byName.get('服务恢复')!].id]: isoPlus(15),
+    [s.events[byName.get('复盘会议')!].id]: isoPlus(120),
+  }
+  const r = computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, desired)!
+  assert(r.D === 0, '排程：期望全部可达时 D=0')
+  assert(
+    r.entries.every((en) => en.deviation === null || en.deviation === 0),
+    '排程：D=0 时全部期望偏差为 0',
+  )
+  assert(scheduleFeasible(s.events, s.constraints, s.anchorId!, r), '排程：D=0 输出可行')
+
+  const mk = () =>
+    computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, {
+      [s.events[byName.get('服务恢复')!].id]: isoPlus(25),
+    })
+  assert(JSON.stringify(mk()) === JSON.stringify(mk()), '排程：相同输入输出确定一致')
+}
+
+// ---- 最小偏差排程：未连通事件的期望被忽略并明确标记 ----
+{
+  const s = buildConsistentSample()
+  const byName = new Map(s.events.map((e, i) => [e.name, i]))
+  const press = byName.get('媒体报道')!
+  const r = computeMinDeviationSchedule(s.events, s.constraints, s.anchorId, ANCHOR_ISO, {
+    [s.events[byName.get('服务恢复')!].id]: isoPlus(25),
+    [s.events[press].id]: isoPlus(50),
+  })!
+  assert(r.desiredCount === 1, '排程：未连通事件的期望不参与搜索（仅 1 个有效期望）')
+  const enPress = r.entries[press]
+  assert(enPress.status === 'unscheduled' && enPress.desiredIgnored, '排程：未连通事件标记未定时且期望被忽略')
+  assert(enPress.desiredOffset === 50, '排程：被忽略的期望仍记录偏移以便展示')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
