@@ -10,6 +10,17 @@ function mkEvent(name: string, note?: string): TEvent {
 }
 
 /**
+ * 在锚点绝对时间上叠加分钟偏移，得到期望绝对时刻
+ * （yyyy-MM-ddTHH:mm，供 datetime-local 使用）。
+ */
+export function isoAtOffset(anchorISO: string, offsetMin: number): string {
+  const t = new Date(anchorISO)
+  t.setMinutes(t.getMinutes() + offsetMin)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}`
+}
+
+/**
  * 可满足示例：事故复盘时间线（锚点为“值班告警触发”）。
  * 其中“媒体报道”与主体事件没有任何约束连接，用于演示“无法定时”。
  */
@@ -41,11 +52,23 @@ export function buildConsistentSample(): AppState {
   ]
   const constraints = E.map((e) => ({ ...e, id: uid('ct') }))
 
+  const anchorTime = defaultAnchorTime()
+  // 最小偏差排程示例期望时刻（相对锚点绝对时间）：
+  // 介入期望 +6（窗口 +2~+5，至少差 1）、恢复期望 +12（窗口 +10~+20）。
+  // 二者经“定位 早于 恢复 5~15”等约束互相牵动，整体最小 D = 1：
+  // 取介入 +5、定位 +8、切换 +12、恢复 +13 等可行位势时，
+  // 介入偏差 −1（达到 −D）、恢复偏差 +1（达到 +D）。
+  const expectedTimes: Record<string, string> = {
+    [onCall.id]: isoAtOffset(anchorTime, 6),
+    [recovered.id]: isoAtOffset(anchorTime, 12),
+  }
+
   return {
     events,
     constraints,
     anchorId: alert.id,
-    anchorTime: defaultAnchorTime(),
+    anchorTime,
+    expectedTimes,
   }
 }
 
@@ -75,12 +98,19 @@ export function buildContradictionSample(): AppState {
     constraints,
     anchorId: A.id,
     anchorTime: defaultAnchorTime(),
+    expectedTimes: {},
   }
 }
 
 /** 空状态（保留默认锚点时间） */
 export function emptyState(): AppState {
-  return { events: [], constraints: [], anchorId: null, anchorTime: defaultAnchorTime() }
+  return {
+    events: [],
+    constraints: [],
+    anchorId: null,
+    anchorTime: defaultAnchorTime(),
+    expectedTimes: {},
+  }
 }
 
 /** 当前时间取整到分钟，用于 datetime-local 输入框 */

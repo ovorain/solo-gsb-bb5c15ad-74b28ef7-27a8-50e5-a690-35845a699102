@@ -790,3 +790,69 @@ table.windows tr.traced td {
 .constraint-row.preview-off .constraint-text {
   color: var(--ok);
 }
+
+/* ---------- 最小偏差排程 ---------- */
+.schedule-panel {
+  border-color: rgba(63, 185, 80, 0.35);
+}
+.schedule-summary {
+  background: rgba(63, 185, 80, 0.07);
+  border: 1px solid rgba(63, 185, 80, 0.35);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  line-height: 1.8;
+}
+.schedule-summary strong {
+  color: var(--text);
+}
+.schedule-summary .d-badge {
+  font-family: var(--mono);
+  color: var(--ok);
+  font-size: 13px;
+  background: var(--ok-bg);
+  border: 1px solid rgba(63, 185, 80, 0.55);
+  border-radius: 4px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.schedule-warn {
+  color: var(--warn);
+  font-size: 12px;
+}
+.schedule-table input[type="datetime-local"] {
+  padding: 3px 6px;
+  font-size: 12px;
+}
+table.windows tr.hit-bound td {
+  background: rgba(63, 185, 80, 0.08);
+}
+table.windows tr.hit-bound td:first-child {
+  border-left: 3px solid var(--ok);
+}
+.badge.d-hit {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid rgba(63, 185, 80, 0.7);
+}
+.dev-value {
+  font-weight: 700;
+  color: var(--text);
+}
+tr.hit-bound .dev-value {
+  color: var(--ok);
+}
+.schedule-legend {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.8;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.schedule-legend code {
+  font-family: var(--mono);
+  color: var(--text-dim);
+}

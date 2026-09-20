@@ -46,3 +46,17 @@ export function describeConstraint(
   const range = c.min === c.max ? `${c.min}` : `${c.min}~${c.max}`
   return `「${a}」${rel}「${b}」 ${range} 分钟`
 }
+
+/** 有符号偏差：+2 / −3 / 0（分钟） */
+export function formatSignedMin(min: number | null): string {
+  if (min === null) return '—'
+  if (min === 0) return '0'
+  return min > 0 ? `+${min}` : `−${Math.abs(min)}`
+}
+
+/** 偏差的自然语言：晚于期望 2 分钟 / 早于期望 3 分钟 / 与期望同时 */
+export function describeDeviation(min: number | null): string {
+  if (min === null) return '—'
+  if (min === 0) return '与期望同时'
+  return min > 0 ? `晚于期望 ${min} 分钟` : `早于期望 ${-min} 分钟`
+}

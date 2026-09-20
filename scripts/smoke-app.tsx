@@ -7,7 +7,9 @@ import { renderToString } from 'react-dom/server'
 import { createElement as h } from 'react'
 import App from '../src/App'
 import WindowsTable from '../src/components/WindowsTable'
+import SchedulePanel from '../src/components/SchedulePanel'
 import { analyze, traceBound } from '../src/lib/graph'
+import { findMinDeviationSchedule } from '../src/lib/schedule'
 import { buildConsistentSample } from '../src/lib/samples'
 
 let failed = 0
@@ -72,6 +74,33 @@ check(earliestHtml, '≥ +10', '最早追溯')
 // 无法定时事件：单元格不可点击且说明原因
 check(earliestHtml, '无法定时，最早边界不存在、不可追溯', '不可追溯原因')
 check(earliestHtml, '无法定时，最晚边界不存在、不可追溯', '不可追溯原因')
+
+// 3) 最小偏差排程面板：示例含介入 +6 / 恢复 +12 两个期望，整体 D=1
+const sched = findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, s.expectedTimes)
+if (!sched) {
+  failed++
+  console.error('SMOKE FAIL: 排程求解返回 null')
+} else {
+  const schedHtml = renderToString(
+    h(SchedulePanel, {
+      events: s.events,
+      schedule: sched,
+      anchorTime: s.anchorTime,
+      expectedTimes: s.expectedTimes,
+      onExpectedChange: () => {},
+    }),
+  )
+  check(schedHtml, '最小偏差排程', '排程面板')
+  check(schedHtml, 'D = 1 分钟', '排程面板：整体最小 D')
+  check(schedHtml, '达到 ±D', '排程面板：达到 ±D 徽标')
+  check(schedHtml, '期望绝对时刻', '排程面板：期望时刻列')
+  check(schedHtml, '相对期望偏差', '排程面板：偏差列')
+  check(schedHtml, '未定时', '排程面板：未定时状态（媒体报道）')
+  check(schedHtml, '确定性可行解', '排程面板：确定性说明')
+
+  // App 初始渲染也应直接包含排程面板（可满足 + 有锚点 + 示例带期望）
+  check(appHtml, '最小偏差排程', 'App 含排程面板')
+}
 
 if (failed > 0) process.exit(1)
 console.log('smoke ok')

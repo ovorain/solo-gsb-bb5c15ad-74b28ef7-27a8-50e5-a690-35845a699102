@@ -170,6 +170,23 @@ export function findNegativeCycle(
 }
 
 /**
+ * 求差分系统的一组确定性可行位势（实际时刻偏移，分钟，整数）。
+ *
+ * 以“全部节点初始距离 0”的超级源点 Bellman-Ford 结果作为可行解：
+ * 收敛后对每条边 u→v（t_v − t_u ≤ w）都有 dist[v] ≤ dist[u] + w，
+ * 故 dist 即满足全部差分不等式的一组赋值。迭代顺序固定（边集顺序一致），
+ * 同一输入恒得同一输出 —— 用于最小偏差排程输出确定性可行解。
+ *
+ * 系统存在负环（不可满足）时返回 null。
+ */
+export function feasiblePotentials(n: number, edges: DiffEdge[]): number[] | null {
+  if (n === 0) return []
+  const { dist, lastRelaxed } = bellmanFord(n, edges, new Array(n).fill(0))
+  if (lastRelaxed) return null
+  return dist
+}
+
+/**
  * 对当前全部启用的约束做完整分析：
  * 1) 超级源点 Bellman-Ford 检测差分系统是否可满足（有无负环）；
  * 2) 有负环时抽取一条矛盾环；

@@ -1,6 +1,11 @@
 import { analyze, buildEdges, constraintToEdges, traceBound } from '../src/lib/graph'
 import { DEFAULT_STATE_LIMIT, findMinimalRepairs, MAX_PLANS } from '../src/lib/repair'
-import { buildConsistentSample, buildContradictionSample } from '../src/lib/samples'
+import {
+  EXPECTATION_CONSTRAINT_ID,
+  findMinDeviationSchedule,
+  parseLocalMinutes,
+} from '../src/lib/schedule'
+import { buildConsistentSample, buildContradictionSample, isoAtOffset } from '../src/lib/samples'
 import type { Constraint, TEvent } from '../src/types'
 
 let passed = 0
@@ -445,6 +450,270 @@ function approxEq(a: number | null, b: number | null) {
     '追溯：重算链累计偏移 5/15/21/25',
   )
   assert(!t.steps.some((s2) => s2.edge.constraintId === overall.id), '追溯：重算链不含已停用约束')
+}
+
+/* ===================== 最小偏差排程 ===================== */
+
+const ANCHOR_ISO = '2026-09-20T10:00'
+
+/** 校验一份排程的实际时刻确实满足全部启用差分约束 */
+function assertScheduleFeasible(
+  events: TEvent[],
+  constraints: Constraint[],
+  anchorId: string,
+  sched: ReturnType<typeof findMinDeviationSchedule>,
+  label: string,
+) {
+  if (!sched) {
+    assert(false, `${label}：排程非空`)
+    return
+  }
+  const actual = new Map<number, number>()
+  for (const s of sched.events) {
+    if (s.timed && s.actualOffset !== null) actual.set(s.eventIdx, s.actualOffset)
+  }
+  const idxOf = new Map(events.map((e, i) => [e.id, i]))
+  for (const c of constraints) {
+    if (!c.enabled) continue
+    const a = idxOf.get(c.aId)!
+    const b = idxOf.get(c.bId)!
+    if (!actual.has(a) || !actual.has(b)) continue
+    const ta = actual.get(a)!
+    const tb = actual.get(b)!
+    const delta = c.relation === 'earlier' ? tb - ta : ta - tb
+    assert(
+      delta >= c.min && delta <= c.max,
+      `${label}：实际时刻满足约束「${events[a].name} ${c.relation} ${events[b].name} ${c.min}~${c.max}」(实际差 ${delta})`,
+    )
+  }
+  // 每个期望事件偏差在 ±D 内
+  for (const s of sched.events) {
+    if (s.deviation === null) continue
+    assert(
+      Math.abs(s.deviation) <= sched.d,
+      `${label}：${events[s.eventIdx].name} 偏差 ${s.deviation} 在 ±D=${sched.d} 内`,
+    )
+  }
+  void anchorId
+}
+
+// ---- 排程：无期望时 D=0，全部已定时事件仍给出确定性实际时刻 ----
+{
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 2, max: 5, enabled: true },
+  ]
+  const r = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, {})
+  assert(r !== null && r.d === 0, '无期望：D=0')
+  assert(r !== null && r.targetIdxs.length === 0, '无期望：无参与求解事件')
+  const sb = r!.events[1]
+  assert(sb.timed && sb.actualOffset === 2, '无期望：B 确定性取最早可行位势 +2')
+}
+
+// ---- 排程：期望恰在窗内 => D=0；窗外 3 分钟 => D=3 ----
+{
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 2, max: 5, enabled: true },
+  ]
+  const expIn: Record<string, string> = { b: isoAtOffset(ANCHOR_ISO, 4) }
+  const r0 = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, expIn)!
+  assert(r0.d === 0, '期望 +4 在窗 [2,5] 内：D=0')
+  assert(r0.events[1].deviation === 0 && r0.events[1].actualOffset === 4, 'D=0：实际=期望 +4')
+  assert(r0.events[1].hitsBound, 'D=0：偏差 0 也标记达到 ±D')
+
+  const expOut: Record<string, string> = { b: isoAtOffset(ANCHOR_ISO, 8) }
+  const r1 = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, expOut)!
+  assert(r1.d === 3, '期望 +8（窗 [2,5]）：最小 D=3')
+  assert(r1.events[1].actualOffset === 5 && r1.events[1].deviation === -3, '实际取窗端点 +5，偏差 −3（达到 −D）')
+  assert(r1.events[1].hitsBound, '达到 −D 的事件被标记')
+  assertScheduleFeasible(events, cs, 'a', r1, '单事件窗夹')
+}
+
+// ---- 排程：多事件经约束互相牵动，整体 D 小于逐事件独立夹窗之和 ----
+{
+  // B 晚于 A 0~10；C 晚于 B 0~10；C 恰比 A 晚 10。
+  // 独立夹窗：B 可在 [0,10]（期望 5 可达）、C 被精确固定在 10。
+  // 整体约束：B 期望 +5、C 期望 +0。
+  //   独立夹窗会给出 B=5、C=0，但违反“C 晚于 B 0~10”（需要 C-B≥0）。
+  //   整体最小 D：C 固定 +10（偏差 +10）且 B≤C；取 B=5 => D=10（C 达到 +D）。
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+    { id: 'c', name: 'C' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 0, max: 10, enabled: true },
+    { id: 'c2', aId: 'c', bId: 'b', relation: 'later', min: 0, max: 10, enabled: true },
+    { id: 'c3', aId: 'c', bId: 'a', relation: 'later', min: 10, max: 10, enabled: true },
+  ]
+  const exp: Record<string, string> = {
+    b: isoAtOffset(ANCHOR_ISO, 5),
+    c: isoAtOffset(ANCHOR_ISO, 0),
+  }
+  const r = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, exp)!
+  assert(r.d === 10, `整体最小 D=10（实际 ${r.d}）`)
+  assert(r.targetIdxs.length === 2, '两个期望事件都参与求解')
+  const sb = r.events[1]
+  const sc = r.events[2]
+  assert(sc.actualOffset === 10 && sc.deviation === 10 && sc.hitsBound, 'C 实际 +10、偏差 +10 达到 +D')
+  // B 在确定性可行解中取尽可能小的位势 0（偏差 −5 ≤ D）；关键是整体解可行而非独立夹窗
+  assert(sb.deviation !== null && Math.abs(sb.deviation) <= 10, 'B 的偏差在 ±D=10 内（整体可行解）')
+  assert(sb.actualOffset! <= sc.actualOffset!, 'B ≤ C，满足“C 晚于 B 0~10”')
+  assertScheduleFeasible(events, cs, 'a', r, '多事件牵动')
+  // 独立夹窗的伪解 B=5,C=0 确实违反 C 晚于 B 0~10：
+  assert(!(0 >= 5 && 0 - 5 <= 10), '独立夹窗伪解（B=5,C=0）不满足 C-B≥0')
+}
+
+// ---- 排程：两个期望事件“争抢”同一可变量，必须整体折中 ----
+{
+  // B 晚于 A 0~20（仅此一条约束）。B 同时被两个期望值约束（同事件只可填一个，
+  // 故用 B、C 两事件 + 精确 0 间隔模拟两个期望对同一时点的牵引）。
+  // B 晚 A 0~20；C 与 B 精确同时（later 0~0）；期望 B=0、C=20。
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+    { id: 'c', name: 'C' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 0, max: 20, enabled: true },
+    { id: 'c2', aId: 'c', bId: 'b', relation: 'later', min: 0, max: 0, enabled: true },
+  ]
+  const exp: Record<string, string> = {
+    b: isoAtOffset(ANCHOR_ISO, 0),
+    c: isoAtOffset(ANCHOR_ISO, 20),
+  }
+  const r = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, exp)!
+  // B=C=x，需 |x|≤D 且 |x−20|≤D => D≥10
+  assert(r.d === 10, `冲突期望整体折中 D=10（实际 ${r.d}）`)
+  assert(r.events[1].actualOffset === r.events[2].actualOffset, '精确同时约束下 B、C 实际时刻相同')
+  assert(
+    r.events.filter((s) => s.hitsBound).length >= 1,
+    '至少一个期望事件达到 ±D（−10 或 +10）',
+  )
+  assertScheduleFeasible(events, cs, 'a', r, '争抢折中')
+}
+
+// ---- 排程：未与锚点连通的事件即使填了期望也标为未定时、不参与求解 ----
+{
+  const s = buildConsistentSample()
+  const press = s.events.find((e) => e.name === '媒体报道')!
+  const recovered = s.events.find((e) => e.name === '服务恢复')!
+  const expectedTimes = {
+    ...s.expectedTimes,
+    [press.id]: isoAtOffset(s.anchorTime, 30),
+    [recovered.id]: isoAtOffset(s.anchorTime, 15),
+  }
+  const r = findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, expectedTimes)!
+  const pressIdx = s.events.findIndex((e) => e.id === press.id)
+  assert(!r.events[pressIdx].timed, '媒体报道：未定时')
+  assert(r.events[pressIdx].hasExpectation && r.events[pressIdx].deviation === null, '未定时事件有期望但无偏差')
+  assert(r.disconnectedExpectedIdxs.includes(pressIdx), '未定时期望事件列入 disconnectedExpectedIdxs')
+  assert(!r.targetIdxs.includes(pressIdx), '未定时事件不参与整体求解')
+}
+
+// ---- 排程：矛盾系统 / 无锚点 / 空系统返回 null（界面不展示旧排程）----
+{
+  const s = buildContradictionSample()
+  assert(
+    findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, {}) === null,
+    '矛盾系统不产出排程',
+  )
+  const ok = buildConsistentSample()
+  assert(
+    findMinDeviationSchedule(ok.events, ok.constraints, null, ok.anchorTime, {}) === null,
+    '无锚点不产出排程',
+  )
+  assert(findMinDeviationSchedule([], [], null, ANCHOR_ISO, {}) === null, '空系统不产出排程')
+}
+
+// ---- 排程：同一输入结果确定（多次调用完全一致）----
+{
+  const s = buildConsistentSample()
+  const r1 = findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, s.expectedTimes)!
+  const r2 = findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, s.expectedTimes)!
+  assert(r1.d === r2.d, '确定性：两次 D 相同')
+  assert(
+    JSON.stringify(r1.events.map((e) => e.actualOffset)) ===
+      JSON.stringify(r2.events.map((e) => e.actualOffset)),
+    '确定性：两次实际偏移序列完全一致',
+  )
+}
+
+// ---- 排程：可满足示例整体最小 D=1，且至少一个事件达到 ±D ----
+{
+  const s = buildConsistentSample()
+  const r = findMinDeviationSchedule(s.events, s.constraints, s.anchorId, s.anchorTime, s.expectedTimes)!
+  assert(r.d === 1, `可满足示例期望（介入+6、恢复+12）整体最小 D=1（实际 ${r.d}）`)
+  assert(r.targetIdxs.length === 2, '示例两个期望事件参与求解')
+  assert(r.events.some((e) => e.hitsBound), '示例排程中至少一个事件达到 ±D')
+  assertScheduleFeasible(s.events, s.constraints, s.anchorId!, r, '可满足示例')
+}
+
+// ---- 排程：停用约束后按有效约束重算（偏差需求变化）----
+{
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 2, max: 5, enabled: true },
+  ]
+  const exp: Record<string, string> = { b: isoAtOffset(ANCHOR_ISO, 8) }
+  const before = findMinDeviationSchedule(events, cs, 'a', ANCHOR_ISO, exp)!
+  assert(before.d === 3, '停⽤前：D=3')
+  const off = cs.map((c) => ({ ...c, enabled: false }))
+  const after = findMinDeviationSchedule(events, off, 'a', ANCHOR_ISO, exp)!
+  // 停⽤唯一约束后 B 与锚点不再连通：期望不参与求解、无目标 => D=0，B 标为未定时
+  assert(after.d === 0 && after.targetIdxs.length === 0, '停⽤后无已定时目标：D=0')
+  assert(!after.events[1].timed, '停⽤后 B 标记为未定时')
+}
+
+// ---- 排程：翻倍搜索（长链末端期望远离窗口）----
+{
+  // 11 个事件链式“晚 0~1”：末端窗口 [0,10]，期望 +100 => D≥90
+  const events: TEvent[] = Array.from({ length: 11 }, (_, i) => ({ id: `e${i}`, name: `E${i}` }))
+  const cs: Constraint[] = []
+  for (let i = 1; i <= 10; i++) {
+    cs.push({ id: `c${i}`, aId: events[i].id, bId: events[i - 1].id, relation: 'later', min: 0, max: 1, enabled: true })
+  }
+  const exp: Record<string, string> = { [events[10].id]: isoAtOffset(ANCHOR_ISO, 100) }
+  const r = findMinDeviationSchedule(events, cs, events[0].id, ANCHOR_ISO, exp)!
+  assert(r.d === 90, `长链末端期望 +100（窗 [0,10]）：D=90（实际 ${r.d}）`)
+  assert(r.events[10].actualOffset === 10 && r.events[10].deviation === -90, '实际取窗端点 +10，偏差 −90')
+  assert(r.feasibilityChecks > 0, '记录可满足性检查次数')
+}
+
+// ---- 排程：期望偏移解析与非法时间 ----
+{
+  assert(parseLocalMinutes(ANCHOR_ISO) !== null, '合法时间可解析')
+  assert(parseLocalMinutes('') === null, '空期望时间返回 null')
+  assert(parseLocalMinutes('garbage') === null, '非法期望时间返回 null')
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 0, max: 10, enabled: true },
+  ]
+  const r = findMinDeviationSchedule(events, cs, 'a', 'not-a-date', {
+    b: isoAtOffset(ANCHOR_ISO, 5),
+  })
+  // 锚点时间非法：无法计算偏移，期望被忽略（仍给出 D=0 排程）
+  assert(r !== null && r.d === 0 && !r.events[1].hasExpectation, '锚点时间非法时期望被忽略')
+}
+
+// ---- 排程：期望边使用专门标记，不污染真实约束 id ----
+{
+  const { edges } = buildEdges([], [])
+  assert(edges.length === 0, '空约束无边')
+  assert(EXPECTATION_CONSTRAINT_ID === '__expectation__', '期望边标记常量稳定')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

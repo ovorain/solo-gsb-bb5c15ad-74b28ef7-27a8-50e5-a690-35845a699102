@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { AppState, Constraint, TEvent } from './types'
 import { analyze, traceBound } from './lib/graph'
 import { findMinimalRepairs } from './lib/repair'
+import { findMinDeviationSchedule } from './lib/schedule'
 import {
   buildConsistentSample,
   buildContradictionSample,
@@ -17,6 +18,7 @@ import GraphView from './components/GraphView'
 import CyclePanel from './components/CyclePanel'
 import WindowsTable from './components/WindowsTable'
 import RepairPanel from './components/RepairPanel'
+import SchedulePanel from './components/SchedulePanel'
 
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadState() ?? buildConsistentSample())
@@ -32,7 +34,6 @@ export default function App() {
   }, [state])
 
   const { events, constraints, anchorId, anchorTime } = state
-
   // —— 原始数据的实时分析（用于矛盾判定与修复搜索）——
   const result = useMemo(
     () => analyze(events, constraints, anchorId),
@@ -131,6 +132,26 @@ export default function App() {
     return s
   }, [trace])
 
+  // —— 最小偏差排程：仅在（有效）约束系统可满足且已设置锚点时整体求解；
+  //    矛盾状态 / 无锚点时为 null，界面不渲染排程（不显示旧结果）——
+  const schedule = useMemo(() => {
+    if (!effectiveResult.satisfiable || !anchorId) return null
+    return findMinDeviationSchedule(
+      events,
+      effectiveConstraints,
+      anchorId,
+      anchorTime,
+      state.expectedTimes ?? {},
+    )
+  }, [
+    effectiveResult.satisfiable,
+    anchorId,
+    events,
+    effectiveConstraints,
+    anchorTime,
+    state.expectedTimes,
+  ])
+
   /** 点击时间窗单元格：再次点击同一单元格则关闭追溯 */
   const requestTrace = (eventIdx: number, kind: 'earliest' | 'latest') => {
     setTraceReq((cur) =>
@@ -156,12 +177,17 @@ export default function App() {
   const removeEvent = (id: string) => {
     setPreviewIndex(null)
     setTraceReq(null)
-    setState((s) => ({
-      ...s,
-      events: s.events.filter((e) => e.id !== id),
-      constraints: s.constraints.filter((c) => c.aId !== id && c.bId !== id),
-      anchorId: s.anchorId === id ? null : s.anchorId,
-    }))
+    setState((s) => {
+      const expectedTimes = { ...s.expectedTimes }
+      delete expectedTimes[id]
+      return {
+        ...s,
+        events: s.events.filter((e) => e.id !== id),
+        constraints: s.constraints.filter((c) => c.aId !== id && c.bId !== id),
+        anchorId: s.anchorId === id ? null : s.anchorId,
+        expectedTimes,
+      }
+    })
   }
 
   const renameEvent = (id: string, name: string) => {
@@ -174,9 +200,24 @@ export default function App() {
   }
 
   const setAnchor = (id: string) => {
-    // 切换锚点后旧的推导链不再适用，清除追溯
+    // 切换锚点后旧的推导链不再适用，清除追溯；锚点自身不参与期望偏差
     setTraceReq(null)
-    setState((s) => ({ ...s, anchorId: id }))
+    setState((s) => {
+      if (!s.expectedTimes || !s.expectedTimes[id]) return { ...s, anchorId: id }
+      const expectedTimes = { ...s.expectedTimes }
+      delete expectedTimes[id]
+      return { ...s, anchorId: id, expectedTimes }
+    })
+  }
+
+  /** 编辑某事件的期望绝对时刻（随项目状态持久化，实时重算排程） */
+  const setExpectedTime = (eventId: string, value: string) => {
+    setState((s) => {
+      const expectedTimes = { ...(s.expectedTimes ?? {}) }
+      if (value) expectedTimes[eventId] = value
+      else delete expectedTimes[eventId]
+      return { ...s, expectedTimes }
+    })
   }
 
   const addConstraint = (c: Omit<Constraint, 'id'>) => {
@@ -439,6 +480,19 @@ export default function App() {
           onTrace={requestTrace}
           onCloseTrace={() => setTraceReq(null)}
         />
+      )}
+
+      {/* 最小偏差排程：仅可满足且已设置锚点时展示；矛盾状态不渲染（不显示旧结果） */}
+      {schedule && (
+        <div style={{ marginTop: 16 }}>
+          <SchedulePanel
+            events={events}
+            schedule={schedule}
+            anchorTime={anchorTime}
+            expectedTimes={state.expectedTimes ?? {}}
+            onExpectedChange={setExpectedTime}
+          />
+        </div>
       )}
 
       <div className="footer-note">

@@ -6,9 +6,19 @@ export function loadState(): AppState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as AppState
+    const parsed = JSON.parse(raw) as Partial<AppState>
     if (!Array.isArray(parsed.events) || !Array.isArray(parsed.constraints)) return null
-    return parsed
+    // 兼容旧版本持久化数据：期望时刻字段可能缺失
+    return {
+      events: parsed.events,
+      constraints: parsed.constraints,
+      anchorId: parsed.anchorId ?? null,
+      anchorTime: parsed.anchorTime ?? '',
+      expectedTimes:
+        parsed.expectedTimes && typeof parsed.expectedTimes === 'object'
+          ? parsed.expectedTimes
+          : {},
+    }
   } catch {
     return null
   }

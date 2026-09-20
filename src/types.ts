@@ -34,6 +34,12 @@ export interface AppState {
   anchorId: string | null
   /** 锚点绝对时间（本地时间，ISO 格式 yyyy-MM-ddTHH:mm） */
   anchorTime: string
+  /**
+   * 各事件的期望绝对时刻（本地时间，ISO 格式 yyyy-MM-ddTHH:mm），按事件 id 索引。
+   * 仅非锚点事件可填写；与项目其余状态一起持久化。
+   * 未与锚点连通的事件即使填写也不参与最小偏差求解（排程中标记为“未定时”）。
+   */
+  expectedTimes: Record<string, string>
 }
 
 /** 差分图中的一条有向边 u -> v，权重 w（分钟），表示 t_v - t_u <= w */
@@ -134,4 +140,54 @@ export interface RepairSearchResult {
   statesVisited: number
   /** 状态数上限（默认 2000） */
   stateLimit: number
+}
+
+/* ===================== 最小偏差排程 ===================== */
+
+/** 排程中单个事件的定位结果 */
+export interface ScheduledEvent {
+  /** 事件下标 */
+  eventIdx: number
+  /** 是否已定时：与锚点在（启用约束）无向图上连通且锚点存在 */
+  timed: boolean
+  /**
+   * 实际时刻相对锚点的偏移（分钟，整数）；timed 为 false 时为 null。
+   * 由整体可满足性搜索给出的确定性可行解（超级源点 Bellman-Ford 可行位势）。
+   */
+  actualOffset: number | null
+  /** 该事件是否填写了合法期望时刻 */
+  hasExpectation: boolean
+  /** 期望时刻相对锚点的偏移（分钟，整数）；无合法期望/锚点时间非法时为 null */
+  expectedOffset: number | null
+  /**
+   * 实际相对期望的偏差（分钟，整数）= actualOffset − expectedOffset；
+   * 未定时或无期望时为 null。
+   */
+  deviation: number | null
+  /** 该事件是否为期望事件且偏差绝对值恰好达到最大偏差 D（即达到 ±D） */
+  hitsBound: boolean
+}
+
+/**
+ * 最小偏差排程结果。
+ *
+ * 在约束系统可满足且已设置锚点时，求最小非负整数 D，使全部启用约束
+ * 与每个“已定时期望事件”的 |实际 − 期望| ≤ D 同时可满足；
+ * 整体作为单个差分约束系统做可满足性搜索（不能逐事件独立夹到现有时间窗）。
+ */
+export interface ScheduleResult {
+  /** 锚点事件下标 */
+  anchorIdx: number
+  /** 最小非负整数 D（分钟） */
+  d: number
+  /** 参与求解（已定时且填写了合法期望时刻）的事件下标，按下标升序 */
+  targetIdxs: number[]
+  /** 已填写期望但仍未与锚点连通、因而不参与求解并标记为未定时的事件下标 */
+  disconnectedExpectedIdxs: number[]
+  /** 每个事件的定位结果 */
+  events: ScheduledEvent[]
+  /** 搜索过程中测试的可满足性次数（调试/说明用） */
+  feasibilityChecks: number
+  /** 是否因 D 达到安全上限而停止（正常数据不会发生） */
+  capped: boolean
 }
